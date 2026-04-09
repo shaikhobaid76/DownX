@@ -1,10 +1,3 @@
-// ========== FOR RENDER DEPLOYMENT ==========
-// 👇 ADD YOUR VERCEL FRONTEND URL HERE
-const ALLOWED_ORIGINS = [
-    'https://downx-web.vercel.app', // ✅ no slash
-];
-// ===========================================
-
 const express = require('express');
 const cors = require('cors');
 const { exec } = require('child_process');
@@ -26,23 +19,10 @@ app.use(helmet({
     crossOriginResourcePolicy: { policy: "cross-origin" },
     contentSecurityPolicy: false
 }));
-
-// ========== CORS WITH VERCEL FRONTEND ==========
 app.use(cors({
-    origin: function(origin, callback) {
-        // Allow requests with no origin (like mobile apps or curl)
-        if (!origin) return callback(null, true);
-        if (ALLOWED_ORIGINS.indexOf(origin) !== -1) {
-            callback(null, true);
-        } else {
-            console.log('Origin not allowed:', origin);
-            callback(null, true); // Allow anyway for testing, change in production
-        }
-    },
+    origin: process.env.ALLOWED_ORIGINS?.split(',') || '*',
     credentials: true
 }));
-// ===============================================
-
 app.use(express.json({ limit: '50mb' }));
 
 // Rate limiting
@@ -140,8 +120,10 @@ async function executeYtDlp(url, outputPath, options = {}) {
         cookies = true
     } = options;
     
+    // For video downloads, ensure we get MP4 container
     let finalFormat = format;
     if (!extractAudio && !getInfo) {
+        // Force MP4 container for better compatibility
         finalFormat = format.includes('mp4') ? format : 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best';
     }
     
@@ -151,7 +133,9 @@ async function executeYtDlp(url, outputPath, options = {}) {
     const geoBypass = '--geo-bypass';
     const noCheckCert = '--no-check-certificate';
     const preferFree = '--prefer-free-formats';
-    const remuxVideo = '--remux-video mp4';
+    const remuxVideo = '--remux-video mp4'; // Force remux to MP4
+    
+    // Add quiet flag to suppress warnings when getting info
     const quietFlag = getInfo ? '--quiet --no-warnings' : '';
     
     let command;
@@ -172,7 +156,9 @@ async function executeYtDlp(url, outputPath, options = {}) {
             maxBuffer: 50 * 1024 * 1024,
             windowsHide: true
         }, (error, stdout, stderr) => {
+            // For getInfo, we need to filter out warnings from stdout
             if (getInfo) {
+                // Filter out lines that start with WARNING:
                 const lines = stdout.split('\n');
                 const jsonLines = lines.filter(line => line.trim() && !line.startsWith('WARNING:') && !line.startsWith('[generic]'));
                 const cleanOutput = jsonLines.join('\n');
@@ -182,7 +168,9 @@ async function executeYtDlp(url, outputPath, options = {}) {
                     return;
                 }
                 
+                // Try to parse the cleaned output
                 try {
+                    // Find the last line that looks like JSON
                     const jsonMatch = cleanOutput.match(/\{.*\}/s);
                     if (jsonMatch) {
                         resolve(jsonMatch[0]);
@@ -204,18 +192,22 @@ async function executeYtDlp(url, outputPath, options = {}) {
                 return;
             }
             
+            // For non-info commands, check if file was created
             if (outputPath && !error) {
+                // Check for the actual file (might be .mp4 or .mkv)
                 const possiblePaths = [
                     outputPath,
                     outputPath.replace('.mp4', '.mkv'),
                     outputPath.replace('.mp4', '.webm')
                 ];
                 
+                // Function to find the actual file
                 const findActualFile = async () => {
                     for (const path of possiblePaths) {
                         if (await fs.pathExists(path)) {
                             const stats = await fs.stat(path);
                             if (stats.size > 0) {
+                                // If it's not the expected path, rename it
                                 if (path !== outputPath) {
                                     console.log(`📝 Renaming ${path} to ${outputPath}`);
                                     await fs.move(path, outputPath, { overwrite: true });
@@ -227,6 +219,7 @@ async function executeYtDlp(url, outputPath, options = {}) {
                     return null;
                 };
                 
+                // Wait a bit for file operations to complete
                 setTimeout(async () => {
                     try {
                         const actualFile = await findActualFile();
@@ -245,6 +238,7 @@ async function executeYtDlp(url, outputPath, options = {}) {
                     }
                 }, 2000);
             } else if (error) {
+                // Try fallback for video downloads
                 if (!extractAudio && !getInfo && outputPath) {
                     console.log('🔄 Primary format failed, trying fallback...');
                     const fallbackCommand = `yt-dlp ${cookiesOption} ${userAgent} ${geoBypass} ${noCheckCert} ${remuxVideo} -f best -o "${outputPath.replace(/\\/g, '/')}" "${url}"`;
@@ -252,6 +246,7 @@ async function executeYtDlp(url, outputPath, options = {}) {
                         if (fbError) {
                             reject(new Error(`Download failed: ${fbError.message}\nStderr: ${stderr}`));
                         } else {
+                            // Check if fallback created the file
                             setTimeout(async () => {
                                 try {
                                     if (await fs.pathExists(outputPath)) {
@@ -281,9 +276,10 @@ async function executeYtDlp(url, outputPath, options = {}) {
     });
 }
 
-// Pinterest URL resolution
+// ========== PINTEREST URL RESOLUTION ==========
 async function resolvePinterestUrl(shortUrl) {
     return new Promise((resolve) => {
+        // Extract short code
         let shortCode = shortUrl;
         if (shortUrl.includes('pin.it/')) {
             shortCode = shortUrl.split('pin.it/')[1];
@@ -292,6 +288,7 @@ async function resolvePinterestUrl(shortUrl) {
         
         console.log(`📌 Pinterest short code: ${shortCode}`);
         
+        // Try to get actual pin URL via redirect with GET
         const options = {
             method: 'GET',
             hostname: 'pin.it',
@@ -308,9 +305,11 @@ async function resolvePinterestUrl(shortUrl) {
                 console.log(`📌 Resolved to: ${location}`);
                 resolve(location);
             } else {
+                // If no redirect or API URL, read body to extract pin URL
                 let body = '';
                 res.on('data', chunk => body += chunk);
                 res.on('end', () => {
+                    // Try to extract Pinterest pin URL from HTML
                     const pinMatch = body.match(/https?:\/\/www\.pinterest\.com\/pin\/[0-9]+/);
                     if (pinMatch) {
                         console.log(`📌 Extracted from HTML: ${pinMatch[0]}`);
@@ -335,6 +334,7 @@ async function resolvePinterestUrl(shortUrl) {
         req.end();
     });
 }
+// ========== END PINTEREST FIX ==========
 
 // Fetch media info
 async function fetchMediaInfo(url) {
@@ -379,6 +379,7 @@ async function fetchMediaInfo(url) {
     const formats = info.formats || [];
     const media = [];
     
+    // Platform-specific format extraction
     if (finalUrl.includes('pinterest.com')) {
         console.log('📌 Processing Pinterest content');
         const videos = formats.filter(f => f.vcodec !== 'none' && f.url);
@@ -493,7 +494,8 @@ async function downloadMedia(url, outputPath, options = {}) {
     return outputPath;
 }
 
-// API ENDPOINTS
+// ==================== API ENDPOINTS ====================
+
 app.get('/api/proxy-image', async (req, res) => {
     const imageUrl = req.query.url;
     
@@ -574,6 +576,7 @@ app.get('/api/download-file', async (req, res) => {
     try {
         await downloadMedia(finalUrl, tempFile, { type, height, bitrate });
         
+        // Verify file exists and has content
         const stats = await fs.stat(tempFile);
         if (stats.size === 0) {
             throw new Error('Downloaded file is empty');
@@ -729,7 +732,9 @@ app.get('/api/test', (req, res) => {
     });
 });
 
-
+app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
 
 async function startServer() {
     console.log('\n╔═══════════════════════════════════════════════════════════════╗');
